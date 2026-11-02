@@ -8,6 +8,7 @@ use crate::models::{Order, Side, OrderType, OrderStatus, Trade};
 pub struct OrderBook {
     bids: Vec<Order>, // Buy orders (sorted descending by price)
     asks: Vec<Order>, // Sell orders (sorted ascending by price)
+    next_trade_id:u64
 }
 
 impl OrderBook {
@@ -15,6 +16,7 @@ impl OrderBook {
         Self {
             bids: Vec::new(),
             asks: Vec::new(),
+            next_trade_id:1,
         }
     }
 
@@ -54,7 +56,8 @@ impl OrderBook {
                     let trade_qty = order.remaining_quantity.min(best_ask.remaining_quantity);
 
                     // Record the trade (Executes at the resting order's price!)
-                    trades.push(Trade {
+                   let trade=Trade {
+                        trade_id:self. next_trade_id, //asinginin old id then below increment
                         price: best_ask.price,
                         quantity: trade_qty,
                         buyer_order_id: order.id,
@@ -63,7 +66,10 @@ impl OrderBook {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
                             .as_millis() as u64,
-                    });
+                    };
+
+                    self.next_trade_id+=1; //incrementing the id before pushing it
+                    trades.push(trade);
 
                     // Update remaining quantities
                     order.remaining_quantity -= trade_qty;
@@ -126,7 +132,8 @@ impl OrderBook {
 
                     let trade_qty = order.remaining_quantity.min(best_bid.remaining_quantity);
 
-                    trades.push(Trade {
+                    let trade=Trade{
+                        trade_id:self.next_trade_id,
                         price: best_bid.price,
                         quantity: trade_qty,
                         buyer_order_id: best_bid.id,
@@ -135,7 +142,11 @@ impl OrderBook {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
                             .as_millis() as u64,
-                    });
+                    };
+
+                    self.next_trade_id+=1;
+                    trades.push(trade);
+              
 
                     order.remaining_quantity -= trade_qty;
                     best_bid.remaining_quantity -= trade_qty;
@@ -179,47 +190,123 @@ impl OrderBook {
         trades
     }
 
+    
 
-//MODIFY ORDER
-pub fn modify_order(&mut self, order_id: u64, new_price: f64, new_quantity: f64) -> Option<Order> {
-        // Step 1: Find and remove the existing order
-        let mut order = self.cancel_order(order_id)?;
 
-        // Step 2: Update its fields
-        order.price = new_price;
-        order.quantity = new_quantity;
-        order.remaining_quantity = new_quantity; 
+//Helper for MODIFY ORDER////////////////////////////
 
-        // Step 3: Push back and re-sort with ID tie-breaker
-        match order.side {
+// Helper to remove an order by ID from either bids or asks, returning the order and its original index/side
+    pub fn remove_order_with_location(&mut self, order_id: u64) -> Option<(Order, Side, usize)> {
+        if let Some(index) = self.bids.iter().position(|o| o.id == order_id) {
+            let order = self.bids.remove(index);
+            return Some((order, Side::Buy, index));
+        }
+        if let Some(index) = self.asks.iter().position(|o| o.id == order_id) {
+            let order = self.asks.remove(index);
+            return Some((order, Side::Sell, index));
+        }
+        None
+    }
+
+/// Restore an order back to its exact original index to preserve time priority
+    pub fn restore_order_at_index(&mut self, order: Order, side: Side, index: usize) {
+        match side {
             Side::Buy => {
-                self.bids.push(order.clone());
-                // Bids: Highest price first -> Earliest timestamp -> Lowest order ID (Sequence ID)
-                self.bids.sort_by(|a, b| {
-                    b.price.partial_cmp(&a.price).unwrap()
-                        .then_with(|| a.timestamp.cmp(&b.timestamp))
-                        .then_with(|| a.id.cmp(&b.id)) // <--- Sequence ID tie-breaker
-                });
+                let idx = std::cmp::min(index, self.bids.len());
+                self.bids.insert(idx, order);
             }
             Side::Sell => {
-                self.asks.push(order.clone());
-                // Asks: Lowest price first -> Earliest timestamp -> Lowest order ID (Sequence ID)
-                self.asks.sort_by(|a, b| {
-                    a.price.partial_cmp(&b.price).unwrap()
-                        .then_with(|| a.timestamp.cmp(&b.timestamp))
-                        .then_with(|| a.id.cmp(&b.id)) // <--- Sequence ID tie-breaker
-                });
+                let idx = std::cmp::min(index, self.asks.len());
+                self.asks.insert(idx, order);
             }
         }
-
-        Some(order)
     }
 
 
+////////////////////////////////////////////////Modify Order///////////
+pub fn modify_order(
+        &mut self,
+        order_id: u64,
+        new_price: f64,
+        new_quantity: f64,
+    ) -> Result<Option<(Order, f64, bool)>, String> {
+        
+        // 1. Find the order immutably first to inspect and validate
+        let (old_price, old_quantity, filled_quantity) = {
+            let order_ref = self.bids.iter().find(|o| o.id == order_id)
+                .or_else(|| self.asks.iter().find(|o| o.id == order_id));
 
-    //CANCEL ORDER
+            let order = match order_ref {
+                Some(o) => o,
+                None => return Ok(None), // Order not found
+            };
 
-    /// Find and remove an order from either bids or asks by its ID
+            let old_price = order.price;
+            let old_quantity = order.quantity;
+            let filled = old_quantity - order.remaining_quantity;
+            (old_price, old_quantity, filled)
+        }; // Immutable borrow ends here!
+
+        // 2. Validate BEFORE touching the vector structure
+        if new_quantity < filled_quantity {
+            return Err(format!(
+                "Cannot reduce quantity below already filled amount ({})",
+                filled_quantity
+            ));
+        }
+
+        // 3. Now that validation passed, remove the order from its location
+        let (mut target_order, side, original_index) = match self.remove_order_with_location(order_id) {
+            Some(res) => res,
+            None => return Ok(None),
+        };
+
+        // 4. Determine if priority is lost (Price change or size increase)
+        let price_changed = (new_price - old_price).abs() > f64::EPSILON;
+        let quantity_increased = new_quantity > old_quantity;
+
+        let is_increase;
+        let cost_diff;
+
+        if price_changed || quantity_increased {
+            // --- CASE A: Price Change or Quantity Increase (Loses Time Priority) ---mean order price chnages means order will change
+            let old_cost = old_price * old_quantity;
+            let new_cost = new_price * new_quantity;
+
+            cost_diff = (new_cost - old_cost).abs();
+            is_increase = new_cost > old_cost;
+
+            // Update fields
+            target_order.price = new_price;
+            target_order.quantity = new_quantity;
+            target_order.remaining_quantity = new_quantity - filled_quantity;
+
+            // Re-insert at the back of the queue (loses time priority)
+            self.add_order(target_order.clone());
+        } else {
+            // --- CASE B: Quantity Decrease at Same Price (Preserves Time Priority) ---
+            let old_cost = old_price * old_quantity;
+            let new_cost = old_price * new_quantity;
+
+            cost_diff = (old_cost - new_cost).abs();
+            is_increase = false;
+
+            // Update fields in-place
+            target_order.quantity = new_quantity;
+            target_order.remaining_quantity = new_quantity - filled_quantity;
+
+            // Put the order back at its exact original position (preserves time priority)
+            self.restore_order_at_index(target_order.clone(), side, original_index);
+        }
+
+        Ok(Some((target_order, cost_diff, is_increase)))
+    }
+
+
+///////////////////////////////////////////////////////////////////
+
+
+/// Find and remove an order from either bids or asks by its ID
     pub fn cancel_order(&mut self, order_id: u64) -> Option<Order> {
         // 1. Check if it's in the bids vector
         if let Some(index) = self.bids.iter().position(|o| o.id == order_id) {
@@ -234,206 +321,11 @@ pub fn modify_order(&mut self, order_id: u64, new_price: f64, new_quantity: f64)
         // 3. Not found anywhere
         None
     }
+
 }
 
 //////////////////////////////////////////////
 
-// pub fn add_order(&mut self, mut order:Order)->Vec<Trade>{
-
-//     //1. CREATED TRADES VECTOR INITAILIZATION
-//     let mut trades= Vec::new();
-
-
-//     // 2. SELECTING INCOMING ORDER SIDE 
-//    match order.side{
-// Side::Buy=>{
-
-
-//    //a. if its buy we sort the sellers(ask) order on orderbook as ascedning order so buyer will see lowest price first
-//    while order.remaining_quantity>0.0 && !self.asks.is_empty(){
-
-//     //3. CRETING ASCENDING ORDER, of seller's order on orderbook
-//     self.asks.price.sort_by(|a,b|{
-//         a.price.partial_cmp(&b.price).then_with(||a.time_stamp.partial_cmp(&b.time_stamp));
-//     });
-
-//     //4. GET LOWEST PRICE THAT WILL EXECUTE FIRST= is best price buyer, now we are sure the lowest price will be at the position 0 in vector ask
-//     let best_asks= &mut self.asks[0];
-
-//     //5.IF INCOMING ORDER IS LIMIT AND PRICE OF ORDER IS HIGHER THEN THE BEST ASK PRICE ORDER THEN SKIP the loop
-//     // if Order is limit and the price of the order is low then lowes sales price, hen not run loop on it
-//     if order.order_type==OrderType::Limit && order.price<best_ask.price{
-// break;
-//     }
-        
-// //if ordr is even limit but its price is below or equal to the ask price we run loop and execute it
-// //if order is marketprice then we run loop and check its price to find the best ask price order
-
-// //in all other order we have to execute the order even it 
-// //so first we define the qnty
-
-// //if order will execute then the quntity will
-// //dono me jo minimum hogi vo lega min function
-
-
-// //6. DEFINING THE TRADE QUNTITI USIN min() function
-// let trade_qty= order.remaining_quantity.min(&best_ask.remaining_qauntity);
-
-
-// //7. PUSHING TRADES ORDER ENTRIES IN THE TRADES VECTOR 
-// trades.push(Trade{
-//     price:best_asks.price, // Executes at the resting order's price!
-//     quantity:trades_qnty,
-//     buyer_order_id: order.id,
-//     seller_order_id:best_asks.id,
-//     timestamp: std::time::systemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().duration.as_millis() as u64,
-
-// })
-
-// //8. DEFINING REMAINING QUANTITY OF INCOIMG ORDER & RESTING ORDER
-
-// //jo quntity will traded(executed) will be decreased form both seler and buyers order
-// //after trade updated buyer and seller remaining quantity
-// order.remaining_quantity- =trades_qty;
-// best_asks.remaining_quantiy-=trades_qty
-
-
-// //9. DEFINING THE STATUS on iNCOMING & RESTING ORDER
-// //now we define the incoming order status and resting order(ask order) status
-// order.status= if order.remaining_quantity==00{
-//     OrderStatus::Filled
-// }else{
-//     OrderStatus::PartiallyFilled
-// }
-
-// best_asks.status= if best_asks.remaining_quantity==0{
-//     OrderStatus::Filled
-// }else{
-//     OrderStatus::PartiallyFilled
-// }
-
-// //10. REMOVING THE FULLY FILLED RESTING ORDER
-// if best_asks.status=Filled{
-//     self.asks.remove(0);  //otherwise it will show 0 quntity with the orders
-// }
-
-
-// //POST MATCHING (IF ORDERS AFTER EXECUTION REMAINED SOME QUANTITY )
-// //here 2 types order could be here- LiMIT MARKET, first we check if rder have remianing quantity >0.0 then handle on these types order 
-// //pos matching logic
-
-// if order.remaining_quantity>0.0{
-//     match order.order_type{
-//      OrderType::Limit=>{
-//      order.status== if order.status==OrderStatus::PartiallyFilled{
-//         OrderStatus::PartiallyFilled
-//      } else{
-//         OrderStatus::New
-//      } 
-//      //then again we push the same order on the orderbook
-//      bids.push(order);
-//      }
-
-//      //market order either filled or cancelled (not sitson the orderbook so if not matched we have tocancelled them)
-//      OrderType::Market=>{
-//         order.status= OrderStatus::Cancelled
-
-//         //market orders not required to push again, either they execute or got cancelled
-
-//      }
-
-//     }
-
-// Side::Sell=>{
-//     //here on the sell side the order(incoming order , while resting order will be bid side)
-//     while self.order.reamining_quantity>0.0 && !self.bids.is_empty(){
-        
-//         //place all orders in descending order on the orderbook( because seller want to see hie price for his order)
-//         self.bids.price.sort_by(|a,b|{
-//             b.price.partially_cmp(&a.price).unramp().then_with(|| b.timestamp.pratially_cmp(&a.timestamp))
-
-//         })
-
-//         //now we find the best price order to be for seller
-//         let best_bids= &mut self.bids[0]   //we picked the best price
-
-        
-//         //We skip the incoming(seller order) limit orders which price is higher then the resting  buyers order 
-//         if order.price>best_bids.price && order.order_type==OrderType::Limit{
-//             break;
-//         }
-
-//         //now below or equal the price of seller incoming orders (even limit or market order) then the best_bids.price will execute
-//         //we consider thos simply like incoming order
-
-//         let trade_qnty= order.remaining_quantity.min(best_bids.remaining_quantity);
-
-//         //pushed traded order in the trades vector/db
-//         trades.push(Trade{
-//          price:best_bids.price,
-//          quantity:trades_qnty,
-//          seller_order_id:order.id,
-//          buyer_order_id:best_bids.id,
-//          timestamp:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().duration.as_millis() as u64;
-
-//         })
-
-//         //what is the traded quntity we substract it from incoming order'r remaining quntity that order is traded
-//         order.remaining_qunatit=order.remaining_qunatit-trades_qnty;  
-//         //short hand:  order.remaining_qunatit-=trades_qnty;
-
-//         best_bids.remaining_quantity= best_bids.remaining_quantity-trades_qnty;
-
-//         //now we work on the order status:
-
-//         order.status= if order.remaining_quantity==0.0{
-//             OrderStatus::Filled;
-//         }else{
-//             OrderStatus::PartiallyFilled;
-//         }
-
-//         best_bids.status= if best_bids.remaining_quantity==0.0{
-//             OrderStatus::Filled;
-//         }else{
-//             OrderStatus::PartiallyFilled;
-//         }
-
-//         if best_bids.status==OrderStatus::Filled{
-//             self.bids.remove(0); //so we removed the bids indexed 0 element which was the best price(hihest) one to buy from seller
-//         }
-
-//         //after execution of order if incoming order has some remiaing quantty then we have to place it on the its side
-//         order.remaining_quantity>0.0{
-//             match order.order_type{
-//                 OrderType::Limit=>{
-//                     order.status= if order.status==OrderStatus::PartiallyFilled{
-//                         OrderStatus::PartiallyFilled
-
-//                     } else{New
-
-//                     }
-//                     //if the order is partiallfilled or the order is the new we have to pushed it again on the asks side
-//                    self.asks.push(order);
-
-//                 }
-//                 OrderType::Market=>{
-//                     order.status=OrderStatus::Cancelled;
-
-//                 }
-//             }
-
-//         } 
-
-
-
-
-
-
-
-//     }
-// }
-
-// }
 
 
 

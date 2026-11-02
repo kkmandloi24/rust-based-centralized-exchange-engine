@@ -1,1 +1,9 @@
-/target
+# Environment secrets
+# Environment variables and secrets
+.env
+
+# Local database configuration
+src/db.rs
+
+# Rust build files
+/target/

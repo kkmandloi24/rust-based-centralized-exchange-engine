@@ -4,6 +4,7 @@ use chrono::Utc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
+use crate::wal::{EngineCommand};
 use crate::db::{AppState, Status, TransactionRecord, Type};
 use crate::models::wallet::{
     BalanceResponse, DepositRequest, ErrorResponse, OnrampRequest, SingleAssetResponse,
@@ -11,7 +12,7 @@ use crate::models::wallet::{
 };
 use crate::worker::BalanceCommand;
 
-// 1. ALL ASSETS BALANCES
+// 1. ALL ASSETS BALANCES HANDLER FUNCTION
 pub async fn all_assets_ballances(
     req: HttpRequest,
     app_state: web::Data<AppState>,
@@ -29,6 +30,7 @@ pub async fn all_assets_ballances(
         .await
         .is_err()
     {
+        
         return HttpResponse::InternalServerError().json("Worker unavailable");
     }
 
@@ -62,7 +64,6 @@ pub async fn on_ramp(
         user_id,
         asset_identifier: "USD".to_string(),
         amount,
-        payment_type: Type::OnRamp,
         resp: tx,
     };
 
@@ -76,7 +77,7 @@ pub async fn on_ramp(
         Err(_) => return HttpResponse::InternalServerError().json("Channel closed"),
     };
 
-    // Transaction Logging
+    // Building Transaction Logging
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     let txt_id = format!("tx_{}_{}", now, rand::random::<u16>() % 1000);
     let transaction_record = TransactionRecord {
@@ -103,6 +104,9 @@ pub async fn on_ramp(
     })
 }
 
+
+
+
 // 3. DEPOSIT ASSETS (ANY ASSET)
 pub async fn deposit_assets(
     req: HttpRequest,
@@ -127,13 +131,28 @@ pub async fn deposit_assets(
         user_id,
         asset_identifier: body.asset.clone(),
         amount,
-        payment_type: Type::Deposit,
+        // payment_type: Type::Deposit,
         resp: tx,
     };
 
+    //Command for the wal
+    let command= EngineCommand::Deposit { user_id, asset: body.asset.clone(), amount };
+
     if app_state.balance_tx.send(cmd).await.is_err() {
         return HttpResponse::InternalServerError().json("Worker unavailable");
-    }
+
+
+        }
+
+        {
+            let mut wal= app_state.wal.lock().unwrap_or_else(|e| e.into_inner());;
+            if let Err(e)= wal.append(&command){
+                eprintln!("Failed to append deposit to WAL: {}", e);
+            return HttpResponse::InternalServerError().finish();
+        }
+            }
+    
+
 
     let op_result = match rx.await {
         Ok(Ok(res)) => res,

@@ -18,7 +18,7 @@ pub mod trade;
 
 
 //we reexport with using use here so we can import it in the any files as use crate::models::{Order,Side,OrderType,OrderStatus}
-pub use order::{Order,Side,OrderType,OrderStatus};
+pub use order::{Order,Side,OrderType,OrderStatus,UserOrdersResponse,PublicOrderDto};
 pub use trade::Trade;
 pub use auth::{SignupRequest,SignupResponse,ClientResponse, LoginResponse};
 

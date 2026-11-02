@@ -24,6 +24,7 @@ pub enum OrderStatus{
 #[derive(Debug,Clone,Serialize, Deserialize,)]
 pub struct Order{
  pub id:u64,
+ pub user_id: u32,
  pub price:f64,    
  pub quantity:f64,
  pub remaining_quantity:f64,  //to track the partial filled
@@ -35,6 +36,25 @@ pub struct Order{
 }
 
 
+
+//for get all order handler response: 
+#[derive(Serialize)]
+pub struct UserOrdersResponse {
+    pub status: String,
+    pub count: usize,
+    pub orders: Vec<PublicOrderDto>,
+}
+
+/// A clean DTO (Data Transfer Object) for external clients. 
+/// This protects internal engine fields if needed and formats numbers nicely.
+#[derive(Serialize, Clone)]
+pub struct PublicOrderDto {
+    pub id: u64,
+    pub price: f64,
+    pub quantity: f64,
+    pub remaining_quantity: f64,
+    pub side: String, // "Buy" or "Sell"
+}
 
 
 
