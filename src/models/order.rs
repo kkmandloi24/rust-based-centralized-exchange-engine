@@ -47,7 +47,7 @@ pub struct UserOrdersResponse {
 
 /// A clean DTO (Data Transfer Object) for external clients. 
 /// This protects internal engine fields if needed and formats numbers nicely.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone,Debug)]
 pub struct PublicOrderDto {
     pub id: u64,
     pub price: f64,

@@ -1,0 +1,2 @@
+{"seq":1,"command":{"PlaceOrder":{"market":"EthUsdc","order":{"id":1,"user_id":1,"price":130.5,"quantity":5.0,"remaining_quantity":5.0,"order_type":"Limit","side":"Buy","status":"New","timestamp":1794360273551}}}}
+{"seq":2,"command":{"CancelOrder":{"market":"EthUsdc","id":1}}}

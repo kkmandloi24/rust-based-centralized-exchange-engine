@@ -10,7 +10,8 @@ use crate::models::wallet::{
     BalanceResponse, DepositRequest, ErrorResponse, OnrampRequest, SingleAssetResponse,
     TransactionResponse,
 };
-use crate::worker::BalanceCommand;
+
+use crate::ledger::{start_balance_worker, BalanceCommand};
 
 // 1. ALL ASSETS BALANCES HANDLER FUNCTION
 pub async fn all_assets_ballances(
@@ -108,6 +109,86 @@ pub async fn on_ramp(
 
 
 // 3. DEPOSIT ASSETS (ANY ASSET)
+// pub async fn deposit_assets(
+//     req: HttpRequest,
+//     body: web::Json<DepositRequest>,
+//     app_state: web::Data<AppState>,
+// ) -> impl Responder {
+//     let user_id = match req.extensions().get::<u32>().copied() {
+//         Some(id) => id,
+//         None => return HttpResponse::Unauthorized().json("Unauthorized"),
+//     };
+
+//     let amount = body.amount as f64;
+//     if amount <= 0.0 {
+//         return HttpResponse::BadRequest().json(ErrorResponse {
+//             message: "Amount must be greater than 0".to_string(),
+//         });
+//     }
+
+//     let (tx, rx) = oneshot::channel();
+
+//     let cmd = BalanceCommand::Deposit {
+//         user_id,
+//         asset_identifier: body.asset.clone(),
+//         amount,
+//         // payment_type: Type::Deposit,
+//         resp: tx,
+//     };
+
+//     //Command for the wal
+//     let command= EngineCommand::Deposit { user_id, asset: body.asset.clone(), amount };
+
+//     if app_state.balance_tx.send(cmd).await.is_err() {
+//         return HttpResponse::InternalServerError().json("Worker unavailable");
+
+
+//         }
+
+//         {
+//         //     let mut wal= app_state.wal.lock().unwrap_or_else(|e| e.into_inner());
+//         //     if let Err(e)= wal.append(&command){
+//         //         eprintln!("Failed to append deposit to WAL: {}", e);
+//         //     return HttpResponse::InternalServerError().finish();
+//         // }
+//             }
+    
+
+
+//     let op_result = match rx.await {
+//         Ok(Ok(res)) => res,
+//         Ok(Err(err_msg)) => return HttpResponse::NotFound().json(err_msg),
+//         Err(_) => return HttpResponse::InternalServerError().json("Channel closed"),
+//     };
+
+//     // Transaction Logging
+//     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+//     let txt_id = format!("tx_{}_{}", now, rand::random::<u16>() % 1000);
+//     let transaction_record = TransactionRecord {
+//         id: txt_id.clone(),
+//         user_id,
+//         payment_type: Type::Deposit,
+//         asset_symbol: op_result.asset_info.symbol,
+//         payment_method: None,
+//         amount: amount as usize,
+//         status: Status::Successful,
+//         created_at: Utc::now().to_rfc3339(),
+//     };
+
+//     {
+//         let mut transaction_log_db = app_state.txn_log_db.lock().unwrap();
+//         transaction_log_db.add_transaction(user_id, &transaction_record);
+//     }
+
+//     HttpResponse::Ok().json(TransactionResponse {
+//         transaction_log: transaction_record,
+//         user_id,
+//         asset: op_result.asset_info,
+//         balance: op_result.updated_balance,
+//     })
+// }
+
+
 pub async fn deposit_assets(
     req: HttpRequest,
     body: web::Json<DepositRequest>,
@@ -125,49 +206,37 @@ pub async fn deposit_assets(
         });
     }
 
+    // 1. Create a oneshot channel for the balance worker response
     let (tx, rx) = oneshot::channel();
 
+    // 2. Construct the BalanceCommand
     let cmd = BalanceCommand::Deposit {
         user_id,
         asset_identifier: body.asset.clone(),
         amount,
-        // payment_type: Type::Deposit,
         resp: tx,
     };
 
-    //Command for the wal
-    let command= EngineCommand::Deposit { user_id, asset: body.asset.clone(), amount };
-
+    // 3. Send the command to the centralized BalanceWorker over MPSC
     if app_state.balance_tx.send(cmd).await.is_err() {
-        return HttpResponse::InternalServerError().json("Worker unavailable");
+        return HttpResponse::InternalServerError().json("Balance worker unavailable");
+    }
 
-
-        }
-
-        {
-            let mut wal= app_state.wal.lock().unwrap_or_else(|e| e.into_inner());;
-            if let Err(e)= wal.append(&command){
-                eprintln!("Failed to append deposit to WAL: {}", e);
-            return HttpResponse::InternalServerError().finish();
-        }
-            }
-    
-
-
+    // 4. Await the response from the balance worker (which handles the balance.wal append + Supabase update)
     let op_result = match rx.await {
         Ok(Ok(res)) => res,
-        Ok(Err(err_msg)) => return HttpResponse::NotFound().json(err_msg),
-        Err(_) => return HttpResponse::InternalServerError().json("Channel closed"),
+        Ok(Err(err_msg)) => return HttpResponse::BadRequest().json(err_msg),
+        Err(_) => return HttpResponse::InternalServerError().json("Balance worker dropped response channel"),
     };
 
-    // Transaction Logging
+    // 5. Transaction Logging
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     let txt_id = format!("tx_{}_{}", now, rand::random::<u16>() % 1000);
     let transaction_record = TransactionRecord {
         id: txt_id.clone(),
         user_id,
         payment_type: Type::Deposit,
-        asset_symbol: op_result.asset_info.symbol,
+        asset_symbol: op_result.asset_info.symbol.clone(),
         payment_method: None,
         amount: amount as usize,
         status: Status::Successful,
@@ -179,6 +248,7 @@ pub async fn deposit_assets(
         transaction_log_db.add_transaction(user_id, &transaction_record);
     }
 
+    // 6. Return successful response containing transaction info and updated balance
     HttpResponse::Ok().json(TransactionResponse {
         transaction_log: transaction_record,
         user_id,

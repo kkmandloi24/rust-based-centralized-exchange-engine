@@ -57,7 +57,7 @@ impl OrderBook {
 
                     // Record the trade (Executes at the resting order's price!)
                    let trade=Trade {
-                        trade_id:self. next_trade_id, //asinginin old id then below increment
+                        trade_id:self.next_trade_id, //asinginin old id then below increment
                         price: best_ask.price,
                         quantity: trade_qty,
                         buyer_order_id: order.id,
@@ -322,7 +322,69 @@ pub fn modify_order(
         None
     }
 
+    //Calculating agggregate quantity at the specific price
+    /// Calculates the total aggregated remaining quantity at a specific price
+    pub fn get_quantity_at_price(&self, side: Side, price: f64) -> f64 {
+        // Choose the correct vector based on the side (Buy or Sell)
+        let target_vec = match side {
+            Side::Buy => &self.bids,
+            Side::Sell => &self.asks,
+        };
+
+        // Iterate through the orders, filter by price, and sum their quantities
+        target_vec
+            .iter()
+            .filter(|order| {
+                //pick the order which price similar to this price
+                // Using a small epsilon for float comparison is safer, 
+                // but direct equality works if prices are strictly normalized
+                (order.price-price).abs() < f64::EPSILON //it mean when we subtract order.pirce form supplied price,it should remain lower thant the lowest possible fraction
+            })
+            .map(|order| order.remaining_quantity) // Use order.quantity if you don't track partial fills yet
+            .sum() //then we summin all those orders remaining qunatity
+    }
+
+    /////////////////////////////////////////taking snapshot of the asks and bids side 
+    /// Returns aggregated bids sorted by highest price first (best bid at the top)
+    pub fn get_bids_snapshot(&self) -> Vec<(f64, f64)> {
+        let mut aggregated: Vec<(f64, f64)> = Vec::new();
+
+        for order in &self.bids {
+            // Check if this price already exists in our aggregated list
+            if let Some(pos) = aggregated.iter().position(|(p, _)| (*p - order.price).abs() < f64::EPSILON) {
+                aggregated[pos].1 += order.remaining_quantity;
+            } else {
+                aggregated.push((order.price, order.remaining_quantity));
+            }
+        }
+
+        // Sort descending: highest price first (best buy price)
+        aggregated.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        aggregated
+    }
+
+    /// Returns aggregated asks sorted by lowest price first (best ask at the top)
+    pub fn get_asks_snapshot(&self) -> Vec<(f64, f64)> {
+        let mut aggregated: Vec<(f64, f64)> = Vec::new();
+
+        for order in &self.asks {
+            // Check if this price already exists in our aggregated list
+            if let Some(pos) = aggregated.iter().position(|(p, _)| (*p - order.price).abs() < f64::EPSILON) {
+                aggregated[pos].1 += order.remaining_quantity;
+            } else {
+                aggregated.push((order.price, order.remaining_quantity));
+            }
+        }
+
+        // Sort ascending: lowest price first (best sell price)
+        aggregated.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        aggregated
+    }
+    
+
 }
+
+
 
 //////////////////////////////////////////////
 

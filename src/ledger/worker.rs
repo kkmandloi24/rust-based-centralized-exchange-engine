@@ -3,79 +3,15 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
 use sqlx::PgPool;
 use crate::engine::{MarketPair};
+use crate::wal::{BalanceWal,BalanceWalCommand};
+use std::path::Path;
 
-/// Response payload containing updated balance details and metadata
+/* Response payload containing updated balance details and metadata*/
 #[derive(Debug, Clone)]
 pub struct BalanceOpResult {
     pub updated_balance: AssetBalance,
     pub asset_info: AssetInfo,
 }
-
-// /// All operations supported by the balance worker
-// pub enum BalanceCommand {
-//     Deposit {
-//         user_id: u32,
-//         asset_identifier: String,
-//         amount: f64,
-//         payment_type: crate::db::Type,
-//         resp: oneshot::Sender<Result<BalanceOpResult, String>>,
-//     },
-//     GetSingleBalance {
-//         user_id: u32,
-//         asset_identifier: String,
-//         resp: oneshot::Sender<Result<BalanceOpResult, String>>,
-//     },
-//     GetAllBalances {
-//         user_id: u32,
-//         resp: oneshot::Sender<HashMap<AssetSymbol, AssetBalance>>,
-//     },
-//     LockFunds{
-//         user_id: u32,
-//         asset_identifier: String,
-//         amount: f64,
-//         resp: oneshot::Sender<Result<(), String>>,
-//     },
-//     UnlockFunds {
-//         user_id: u32,
-//         asset_identifier: String,
-//         amount: f64,
-//         resp: oneshot::Sender<Result<(), String>>,
-//     },
-   
-//     // ... existing variants (LockFunds, UnlockFunds, SettleTrade, etc.) ...
-//     /// Modifies locked funds when an order is updated.
-//     /// `diff`: The absolute difference in required funds.
-//     /// `is_increase`: true if we need to lock more, false if we need to unlock excess.
-//     ModifyOrderLocks {
-//         user_id: u32,
-//         asset_identifier: String,
-//         diff: f64,
-//         is_increase: bool,
-//         resp: oneshot::Sender<Result<(), String>>,
-//     },
-
-//     SettleTrade {
-//         trade_id:u64,
-//         market: MarketPair,
-//         buyer_order_id:u64,
-//         seller_order_id:u64,
-//         buyer_id: u32,
-//         seller_id: u32,
-//         base_asset: String,   // e.g., "BTC"
-//         quote_asset: String,  // e.g., "USD"
-//         trade_quantity: f64,
-//         execution_price: f64,
-//         buyer_limit_price: f64, // Needed to unlock price difference if buyer limit > execution price
-//         resp: oneshot::Sender<Result<(), String>>,
-//     },
-//     // 👇 Add these to communicate with your worker during snapshots/recovery
-//     GetSnapshot { 
-//         reply_to: tokio::sync::oneshot::Sender<HashMap<u32, HashMap<String, f64>>> 
-//     },
-//     RestoreSnapshot { 
-//         balances: HashMap<u32, HashMap<String, f64>> 
-//     },
-// }
 
 
 ////new command with replay options: 
@@ -208,6 +144,8 @@ RestoreSnapshot {
    
 }
 
+
+
 //WE GET WALLET READY WITH ASSETS DECIMAL PRECISION AND AVAILABLE AND LOCKED BALANCE
 
 /// Wallet creation function:  Generates a default zero-balance wallet for all registered assets
@@ -243,8 +181,54 @@ fn get_or_create_user_wallet(
 
 //MAKING SINGLE THREADED Reciver (handlers points which recive request)
 /// Dedicated single-threaded worker loop processing operations sequentially
-pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<BalanceCommand>) {
-    let mut db: DbStore = HashMap::new();
+pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<BalanceCommand>,
+    snapshot_path: String, // Dynamic String instead of &'static str
+    wal_path: String) {
+    // let mut db: DbStore = HashMap::new();
+
+   // --- PHASE 1: BOOTUP RECOVERY ---
+    
+    // 1. Load Snapshot into in-memory HashMap (DbStore)
+    // 1. Load Snapshot into the correct Wallet HashMap type
+    let mut db: HashMap<u32, HashMap<AssetSymbol, AssetBalance>> = if Path::new(&snapshot_path).exists() {
+        let data = std::fs::read_to_string(&snapshot_path).unwrap_or_default();
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+
+    // 2. Recover un-checkpointed WAL gap entries
+   // 2. Recover un-checkpointed WAL gap entries
+    let wal_entries = BalanceWal::recover(&wal_path).unwrap_or_default();
+    for entry in wal_entries {
+        match entry.command {
+            BalanceWalCommand::Deposit { user_id, asset, amount } => {
+                let asset_info = resolve_asset_symbol(&asset).expect("not supported asset during recovery");
+                let wallet = get_or_create_user_wallet(&mut db, user_id);
+                if let Some(balance_entry) = wallet.get_mut(&asset_info.symbol) {
+                    let current: f64 = balance_entry.available.parse().unwrap_or(0.0);
+                    let new_val = current + amount;
+                    balance_entry.available = format!("{:.1$}", new_val, asset_info.decimals as usize);
+                }
+            }
+            BalanceWalCommand::Withdraw { user_id, asset, amount } => {
+                let asset_info = resolve_asset_symbol(&asset).expect("not supported asset during recovery");
+                let wallet = get_or_create_user_wallet(&mut db, user_id);
+                if let Some(balance_entry) = wallet.get_mut(&asset_info.symbol) {
+                    let current: f64 = balance_entry.available.parse().unwrap_or(0.0);
+                    let new_val = current - amount;
+                    balance_entry.available = format!("{:.1$}", new_val, asset_info.decimals as usize);
+                }
+            }
+        }
+    }
+
+    // 3. Initialize active WAL writer for live runtime
+    let mut wal = BalanceWal::new(&wal_path).expect("Failed to initialize balance WAL");
+
+    //////////////////////////
+    
 
     while let Some(cmd) = receiver.recv().await {
         match cmd {
@@ -255,6 +239,8 @@ pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<Bala
                 resp,
                 ..
             } => {
+                
+
 
                 //validation: if amount is 0 or less than 0 then we send err to the mpsc channle and skip loop
                 if amount<=0.0{
@@ -262,6 +248,18 @@ pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<Bala
                     continue; //skip the the command//not perfrom deposit further means no execute further code;
                 }
 
+                //UPDATING THE WAL
+                // 1. APPEND TO BALANCE WAL FIRST (Ensures crash durability)
+                let wal_result = wal.append(&BalanceWalCommand::Deposit {
+                    user_id,
+                    asset: asset_identifier.clone(),
+                    amount,
+                });
+
+                if let Err(e) = wal_result {
+                    let _ = resp.send(Err(format!("WAL persistence failed: {}", e)));
+                    continue;
+                }
 
                 //UPDATING THE DATABASE
                 // Persist to Supabase first what ever user ledger first we change in the DB then in inmemory
@@ -274,6 +272,8 @@ pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<Bala
 
                 let res= match db_result{
                   Ok(_)=>{
+
+
                     let asset_info = resolve_asset_symbol(&asset_identifier).expect("not supported the asset");
                         // .ok_or_else(|| "We do not support this asset".to_string())?;
 
@@ -303,7 +303,75 @@ pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<Bala
                
                 let _ = resp.send(res);
 
-            }
+            },
+            BalanceCommand::Withdraw {
+                user_id,
+                asset_identifier,
+                amount,
+                resp,
+                ..
+            } => {
+                // Validation: amount must be greater than 0
+                if amount <= 0.0 {
+                    let _ = resp.send(Err("Withdrawal amount must be greater than 0".to_string()));
+                    continue;
+                }
+
+                // Resolve asset info and check available balance in-memory first
+                let asset_info = match resolve_asset_symbol(&asset_identifier) {
+                    Some(info) => info,
+                    None => {
+                        let _ = resp.send(Err("Asset not supported".to_string()));
+                        continue;
+                    }
+                };
+
+                let wallet = get_or_create_user_wallet(&mut db, user_id);
+                let balance_entry = match wallet.get_mut(&asset_info.symbol) {
+                    Some(entry) => entry,
+                    None => {
+                        let _ = resp.send(Err("Asset balance entry not found".to_string()));
+                        continue;
+                    }
+                };
+
+                let current_available: f64 = balance_entry.available.parse().unwrap_or(0.0);
+                if current_available < amount {
+                    let _ = resp.send(Err("Insufficient available balance".to_string()));
+                    continue;
+                }
+
+                // 1. APPEND TO BALANCE WAL FIRST (Ensures crash durability)
+                let wal_result = wal.append(&BalanceWalCommand::Withdraw {
+                    user_id,
+                    asset: asset_identifier.clone(),
+                    amount,
+                });
+
+                if let Err(e) = wal_result {
+                    let _ = resp.send(Err(format!("WAL persistence failed: {}", e)));
+                    continue;
+                }
+
+                // // 2. UPDATING THE DATABASE (Persist to Supabase)
+                // let db_result = db_withdraw(&pool, user_id, &asset_identifier, amount).await;
+
+                // let res = match db_result {
+                //     Ok(_) => {
+                //         let new_available = current_available - amount;
+                //         balance_entry.available =
+                //             format!("{:.1$}", new_available, asset_info.decimals as usize);
+
+                //         Ok(BalanceOpResult {
+                //             updated_balance: (*balance_entry).clone(),
+                //             asset_info,
+                //         })
+                //     }
+                //     Err(e) => Err(e.to_string()),
+                // };
+
+                // let _ = resp.send(res);
+            },
 
 
 
@@ -701,8 +769,11 @@ let _ = reply_to.send(string_db);
             }
             BalanceCommand::RestoreSnapshot { balances,resp } => {
            
+           // 1. Assign the restored snapshot to our local in-memory db state!
+          db = balances;
                 
-                let user_balances = balances;
+                //old way
+                // let user_balances = balances;
                 //actually this in-memory DB that was empty when server crashed, the we resore it
                 //nd this balances we send from the snapshot rrecover method to this workers(before the crash we saved this balance in snapshot, so taking it back)
         let _=resp.send(Ok(()));
@@ -786,7 +857,7 @@ BalanceCommand::ReplayLockFunds{user_id,
 
         //for unmatched command below empty 
 
-            _ => {}
+    
             
 
     }

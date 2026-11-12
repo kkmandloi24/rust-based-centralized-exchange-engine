@@ -18,9 +18,7 @@ let user_id= match req.extensions().get::<u32>(){
 println!(" this is the user_id: {:?}", user_id);
 
 
-let server= app_state.server.lock().unwrap();
-
-match server.getallorders(user_id).await{
+match app_state.get_all_user_orders(user_id).await{
   Ok(orders)=>{
     let count=orders.len();
     HttpResponse::Ok().json(UserOrdersResponse{

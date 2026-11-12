@@ -1,0 +1,2 @@
+{"seq":1,"command":{"PlaceOrder":{"market":"BtcUsdc","order":{"id":1,"user_id":1,"price":160.5,"quantity":2.0,"remaining_quantity":2.0,"order_type":"Limit","side":"Buy","status":"New","timestamp":1794357321007}}}}
+{"seq":2,"command":{"CancelOrder":{"market":"BtcUsdc","id":1}}}
