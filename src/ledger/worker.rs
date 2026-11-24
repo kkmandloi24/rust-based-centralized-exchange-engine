@@ -582,6 +582,9 @@ BalanceCommand::SettleTrade {
 
     let market_str = format!("{:?}", market);
 
+    //FOR POSTGRESQL DB ENTRY
+    //Below db_settle_trade 
+
     let db_result:Result<(), sqlx::Error> = db_settle_trade(
     &pool, 
     trade_id as i64,          // Cast u64 to i64
@@ -666,7 +669,7 @@ Ok(())
 
 
 
-        }
+         }
         Err(e)=>Err(e.to_string()),
 
     };
@@ -699,14 +702,14 @@ Ok(())
                    },
 
 
-                   BalanceCommand::ReplayWithdraw{user_id, asset_identifier, amount,..}=>{
+                   BalanceCommand::ReplayWithdraw{user_id: _, asset_identifier: _, amount: _,..}=>{
                     // Update RAM balance subtraction without calling Supabase
                    },
 
-    BalanceCommand::ReplaySettleTrade{trade_id,
+    BalanceCommand::ReplaySettleTrade{trade_id: _,
                             market,
-                            buyer_order_id,
-                            seller_order_id,
+                            buyer_order_id: _,
+                            seller_order_id: _,
                             buyer_id,
                             seller_id,
                             base_asset,
@@ -715,7 +718,7 @@ Ok(())
                             execution_price,
                             buyer_limit_price,}=>{
 
-let market_str = format!("{:?}", market);
+let _market_str = format!("{:?}", market);
  // 1. Resolve asset symbols first
 let base_asset_info = resolve_asset_symbol(&base_asset).expect("not supported asset");
 let quote_asset_info = resolve_asset_symbol(&quote_asset).expect("not supported asset");
@@ -809,7 +812,7 @@ BalanceCommand::ReplayLockFunds{user_id,
         }
     });
 
-        let available: f64 = balance_entry.available.parse().unwrap_or(0.0);
+        let _available: f64 = balance_entry.available.parse().unwrap_or(0.0);
 
         // if available < amount {
         // let _ = resp.send(Err(format!("Insufficient available balancein memory you have: {}, and you need: {}",
@@ -841,7 +844,7 @@ BalanceCommand::ReplayLockFunds{user_id,
     let balance_entry= wallet.get_mut(&asset_info.symbol).expect("not supported the entry");
     // .ok_or_else(|| "Wallet does not have this asset entries".to_string())?;
 
-    let locked = balance_entry.locked.parse().unwrap_or(0.0);
+    let _locked = balance_entry.locked.parse().unwrap_or(0.0);
 
         let new_locked= balance_entry.locked.parse().unwrap_or(0.0)-amount;    
         let new_available= balance_entry.available.parse().unwrap_or(0.0)+amount;

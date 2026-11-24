@@ -4,14 +4,13 @@ use chrono::Utc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
 
-use crate::wal::{EngineCommand};
 use crate::db::{AppState, Status, TransactionRecord, Type};
 use crate::models::wallet::{
     BalanceResponse, DepositRequest, ErrorResponse, OnrampRequest, SingleAssetResponse,
     TransactionResponse,
 };
 
-use crate::ledger::{start_balance_worker, BalanceCommand};
+use crate::ledger::BalanceCommand;
 
 // 1. ALL ASSETS BALANCES HANDLER FUNCTION
 pub async fn all_assets_ballances(

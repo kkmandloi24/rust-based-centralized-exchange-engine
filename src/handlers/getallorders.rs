@@ -1,9 +1,7 @@
 
 use actix_web::{web, HttpResponse, Responder, HttpRequest, HttpMessage};
-use serde::Deserialize;
 use crate::db::AppState;
 use crate::models::{UserOrdersResponse};
-use crate::engine::MarketPair;
 
 
 pub async fn getallorders_handler( app_state:web::Data::<AppState>, req:HttpRequest)->impl Responder{

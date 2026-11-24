@@ -10,19 +10,17 @@ mod wal;
 mod ws;
 
 use dashmap::DashMap;
-use models::{Order, Side, OrderType, OrderStatus};
-use engine::{OrderBook, MarketPair, MatchingEngine, ExchangeServer};
+use engine::{MarketPair, MatchingEngine, };
 use engine::worker::MarketWorker;
 use wal::Wal;
 use std::sync::Arc;
-use std::collections::HashMap;
 use tokio::sync::{mpsc,broadcast};
 
-use actix_web::{web, App, HttpServer, Responder};
+use actix_web::{web, App, HttpServer};
 use actix_web::middleware::from_fn;
-use db::{AppState, TransactionDb};
+use db::AppState;
 use ledger::{start_balance_worker, BalanceCommand};
-use sqlx::postgres::{PgPoolOptions,PgConnectOptions};
+use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::time::Duration;
 
@@ -212,11 +210,11 @@ async fn main() -> std::io::Result<()> {
 
     println!("Connecting to Supabase PostgreSQL...");
     let db_pool = PgPoolOptions::new()
-        .max_connections(15)
-        .min_connections(5)
-        .acquire_timeout(Duration::from_secs(10))
+        .max_connections(10)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(30))
         .idle_timeout(Duration::from_secs(300))
-        .max_lifetime(Duration::from_secs(60))
+        .max_lifetime(Duration::from_secs(1800))
         .test_before_acquire(false)
         .connect(&database_url)
         .await;
@@ -262,7 +260,7 @@ async fn main() -> std::io::Result<()> {
     for market_pair in supported_markets {
         // Create an individual mailbox channel for this market
         let (market_tx, market_rx) = mpsc::channel(10_000);
-        let (tx, rx)=broadcast::channel(1000);
+        let (tx, _rx)=broadcast::channel(1000);
 
         // Store sender handle in our route map
         market_senders.insert(market_pair.clone(), market_tx);

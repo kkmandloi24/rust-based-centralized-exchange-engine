@@ -6,9 +6,9 @@ use crate::models::{Order, Side, OrderType, OrderStatus, Trade};
 
 #[derive(Debug,)]
 pub struct OrderBook {
-    bids: Vec<Order>, // Buy orders (sorted descending by price)
-    asks: Vec<Order>, // Sell orders (sorted ascending by price)
-    next_trade_id:u64
+    pub bids: Vec<Order>, // Buy orders (sorted descending by price)
+    pub asks: Vec<Order>, // Sell orders (sorted ascending by price)
+    pub next_trade_id:u64
 }
 
 impl OrderBook {
@@ -386,42 +386,158 @@ pub fn modify_order(
 
 
 
-//////////////////////////////////////////////
+///////////////////////////////////////////////////////
+            /// UNIT TESTS ////
+//////////////////////////////////////////////////////////
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper function to create test orders
+    fn create_order(
+        id: u64,
+        user_id: u32,
+        price: f64,
+        quantity: f64,
+        side: Side,
+        timestamp: u64,
+    ) -> Order {
+        Order {
+            id,
+            user_id,
+            price,
+            quantity,
+            remaining_quantity: quantity,
+            order_type: OrderType::Limit,
+            side,
+            status: OrderStatus::New,
+            timestamp,
+        }
+    }
+
+    // Test 1: Check whether a new order book initializes correctly
+    #[test]
+    fn test_orderbook_initialization() {
+        let orderbook = OrderBook::new();
+
+        assert_eq!(orderbook.bids.len(), 0);
+        assert_eq!(orderbook.asks.len(), 0);
+        assert_eq!(orderbook.next_trade_id, 1);
+    }
+
+    // Test 2: Check matching and partial fills
+    #[test]
+    fn test_partial_order_matching() {
+        let mut orderbook = OrderBook::new();
+
+        let order1 = create_order(1, 101, 150.0, 4.0, Side::Buy, 1000);
+        let order2 = create_order(2, 102, 150.0, 3.0, Side::Sell, 1001);
+        let order3 = create_order(3, 103, 150.0, 3.0, Side::Sell, 1002);
+
+        let trades1 = orderbook.add_order(order1);
+        let trades2 = orderbook.add_order(order2);
+        let trades3 = orderbook.add_order(order3);
+
+        // Verify generated trades
+        assert_eq!(trades1.len(), 0);
+        assert_eq!(trades2.len(), 1);
+        assert_eq!(trades3.len(), 1);
+
+        // Verify final order book state
+        assert_eq!(orderbook.bids.len(), 0);
+        assert_eq!(orderbook.asks.len(), 1);
+
+        // Order 3 should have 2 units remaining
+        let order = orderbook.asks.iter()
+            .find(|o| o.id == 3)
+            .unwrap();
+
+        assert_eq!(order.remaining_quantity, 2.0);
+    }
+
+    // Test 3: Check order cancellation
+    #[test]
+    fn test_cancel_order() {
+        let mut orderbook = OrderBook::new();
+
+        let order = create_order(4, 104, 130.0, 3.0, Side::Buy, 1004);
+
+        orderbook.add_order(order);
+
+        assert_eq!(orderbook.bids.len(), 1);
+
+        // Cancel the resting buy order
+        orderbook.cancel_order(4);
+
+        assert_eq!(orderbook.bids.len(), 0);
+    }
+
+    // Test 4: Check price-time priority (FIFO)
+    #[test]
+    fn test_price_time_priority() {
+        let mut orderbook = OrderBook::new();
+
+        // Two sell orders at the same price
+        let sell1 = create_order(1, 101, 150.0, 3.0, Side::Sell, 1000);
+        let sell2 = create_order(2, 102, 150.0, 3.0, Side::Sell, 1001);
+
+        // Incoming buy order
+        let buy = create_order(3, 103, 150.0, 4.0, Side::Buy, 1002);
+
+        orderbook.add_order(sell1);
+        orderbook.add_order(sell2);
+
+        let trades = orderbook.add_order(buy);
+
+        assert_eq!(trades.len(), 2);
+
+        // First sell order must execute before the second
+        assert_eq!(trades[0].seller_order_id, 1);
+        assert_eq!(trades[1].seller_order_id, 2);
+
+        // Second sell order should have 2 units remaining
+        let remaining_order = orderbook.asks.iter()
+            .find(|o| o.id == 2)
+            .unwrap();
+
+        assert_eq!(remaining_order.remaining_quantity, 2.0);
+    }
 
 
+    //Test Modify order method
 
+    #[test]
+    fn testing_modify_order(){
 
+        let sell1 = create_order(1, 101, 150.0, 3.0, Side::Sell, 1000);
 
+        let mut orderbook=OrderBook::new();
+        orderbook.add_order(sell1);
 
+        let (target_order, cost_diff, is_increase)= match orderbook.modify_order(1, 125.0, 2.0){
+            Ok(Some((order, diff,is_increased)))=>{(order, diff,is_increased)},
+            Ok(None)=>{
+               panic!("order not modified")
+            },
+            Err(error)=>{
+                println!("order not modified dues to some err:{}", error);
+                panic!("Test failed");
+            }
 
+        };
+   
+//Modify order quantity and price changed after modification
+assert_eq!(target_order.price,125.0);
+assert_eq!(target_order.quantity,2.0);
+assert_eq!(is_increase, false);  //is-increase says the the over cost increased or decreased from thelast order
 
-
-
-
+    }
     
+}
 
-
-//     }//
-
-
-
-//    }//
-
-//    trades
-
-//  }//
-
-
-//    }//
-
-
-
-
-
-
-
+   
 
 
 ////////////

@@ -1,10 +1,9 @@
 use actix_web::{web, Error, HttpRequest, HttpResponse};
 use actix_ws::Message;
 use futures_util::StreamExt;
-use std::sync::Arc;
 use crate::ws::messages::{MarketEvent,ClientCommand};
 // Assuming MarketPair and AppState are defined in your project
-use crate::AppState; 
+use crate::db::AppState;
 use crate::engine::{ MarketPair};
 use crate::engine::command::{MarketCommand};
 

@@ -1,14 +1,14 @@
 use tokio::sync::{mpsc,oneshot};
+use std::f64::EPSILON;
 use crate::engine::{MatchingEngine, MarketPair};
 use crate::engine::command::{MarketCommand,OrderAck};
 use crate::ledger::BalanceCommand;
 use crate::wal::{Wal, EngineCommand,ExchangeSnapshot,MarketSnapshotData,WallEntry};
-use crate::models::{Order,Trade,Side,UserOrdersResponse,PublicOrderDto};
+use crate::models::{Order,Trade,Side,PublicOrderDto,OrderStatus};
 use std::io;
-use std::fs::File;
-use std::io::{ Write, Read};
 use tokio::sync::broadcast;
 use crate::ws::messages::MarketEvent;
+
 
 
 pub struct MarketWorker {
@@ -35,8 +35,10 @@ impl MarketWorker {
                     let result = self.place_order( order ).await;
                     let _ = respond_to.send(result);
 
-                    let order_id=self.engine.next_sequence_number;
 
+                    //creating info for UI socket broadcasting
+                    let order_id=self.engine.next_sequence_number;
+                    //we have to show the order quntity with price on front-end UI orderbook(for braocasting-socket)
                     let total_quantity= self.engine.order_book.get_quantity_at_price(side,price);
                 
                     ////////////////broadcasting the event for websockes///
@@ -164,13 +166,18 @@ impl MarketWorker {
     
     for order in self.engine.active_orders.values() {
         if order.user_id == user_id {
+            if order.remaining_quantity>0.0{
+                println!(
+                "GET_ORDERS -> id={}, rem={}, qty={}",
+                order.id, order.remaining_quantity, order.quantity
+            );
             user_orders.push(PublicOrderDto {
                 id: order.id,
                 price: order.price,
                 quantity: order.quantity,
                 remaining_quantity: order.remaining_quantity,
                 side: format!("{:?}", order.side),
-            });
+            });}
         }
     }
     
@@ -218,6 +225,11 @@ pub async fn place_order(&mut self, mut order: Order) -> Result<OrderAck, String
         engine.next_sequence_number += 1;
         assigned_id = order.id;
 
+        //setting order.quantity
+        if order.remaining_quantity == 0.0 {
+            order.remaining_quantity = order.quantity;
+        }
+
         engine.active_orders.insert(assigned_id, order.clone());
 
         let command = EngineCommand::PlaceOrder {
@@ -232,19 +244,99 @@ pub async fn place_order(&mut self, mut order: Order) -> Result<OrderAck, String
         let trades = engine.order_book.add_order(order.clone());
         println!("Market {:?} processed order. Trades: {:?}", market, trades);
 
+        ////////////////
         for trade in trades {
-            // Retrieve buyer and seller orders involved in this trade from engine.active_orders 
-            // (or from your order book match result) and push them into trades_to_settle:
-            // Example:
-            // let buyer_order = engine.active_orders.get(&trade.buyer_order_id).cloned().unwrap();
-            // let seller_order = engine.active_orders.get(&trade.seller_order_id).cloned().unwrap();
-            // trades_to_settle.push((trade, buyer_order, seller_order));
-        }
-    } // 👈 CRITICAL: Engine borrow block ends here so `self` can be accessed freely below!
+            let (Some(mut buyer_order), Some(mut seller_order)) = (
+                engine.active_orders.get(&trade.buyer_order_id).cloned(),
+                engine.active_orders.get(&trade.seller_order_id).cloned(),
+            ) else {
+                eprintln!(
+                    "Warning: missing active order for trade {:?} (buyer={}, seller={})",
+                    trade.trade_id, trade.buyer_order_id, trade.seller_order_id
+                );
+                continue;
+            };
 
+            // Update buyer order in active_orders and snapshot
+            buyer_order.remaining_quantity = (buyer_order.remaining_quantity - trade.quantity).max(0.0);
+            if buyer_order.remaining_quantity <= EPSILON {
+                buyer_order.remaining_quantity = 0.0;
+                buyer_order.status = OrderStatus::Filled;
+                engine.active_orders.remove(&buyer_order.id);
+            } else {
+                buyer_order.status = OrderStatus::PartiallyFilled;
+                if let Some(entry) = engine.active_orders.get_mut(&buyer_order.id) {
+                    entry.remaining_quantity = buyer_order.remaining_quantity;
+                    entry.status = buyer_order.status.clone();
+                }
+            }
+
+            // Update seller order in active_orders and snapshot
+            seller_order.remaining_quantity = (seller_order.remaining_quantity - trade.quantity).max(0.0);
+            if seller_order.remaining_quantity <= EPSILON {
+                seller_order.remaining_quantity = 0.0;
+                seller_order.status = OrderStatus::Filled;
+                engine.active_orders.remove(&seller_order.id);
+            } else {
+                seller_order.status = OrderStatus::PartiallyFilled;
+                if let Some(entry) = engine.active_orders.get_mut(&seller_order.id) {
+                    entry.remaining_quantity = seller_order.remaining_quantity;
+                    entry.status = seller_order.status.clone();
+                }
+            }
+
+            println!(
+                "AFTER MATCH -> buyer_id={}, buyer_rem={}, seller_id={}, seller_rem={}, active_has_buyer={}, active_has_seller={}",
+                buyer_order.id,
+                buyer_order.remaining_quantity,
+                seller_order.id,
+                seller_order.remaining_quantity,
+                engine.active_orders.contains_key(&buyer_order.id),
+                engine.active_orders.contains_key(&seller_order.id),
+            );
+
+            trades_to_settle.push((trade, buyer_order, seller_order));
+        }
+
+
+        ////////////////
+
+        // for trade in trades {
+        //     // Retrieve buyer and seller orders involved in this trade from engine.active_orders 
+        //     // (or from your order book match result) and push them into trades_to_settle:
+        //     // Example:
+        //     let buyer_order = engine.active_orders.get(&trade.buyer_order_id).cloned().unwrap();
+        //     let seller_order = engine.active_orders.get(&trade.seller_order_id).cloned().unwrap();
+        //     trades_to_settle.push((trade, buyer_order, seller_order));
+        
+        // }// 👈 CRITICAL: Engine borrow block ends here so `self` can be accessed freely below!
+    }
     // 2. Asynchronously settle trades with the balance worker
     for (trade, buyer_order, seller_order) in trades_to_settle {
         let (resp_tx, resp_rx) = oneshot::channel();
+
+        ///Remove the order from active_order the setled trade
+   if buyer_order.remaining_quantity<= EPSILON{
+    self.engine.active_orders.remove(&buyer_order.id);
+   }
+
+
+   if seller_order.remaining_quantity<= EPSILON{
+    self.engine.active_orders.remove(&seller_order.id);
+   }
+
+   ////////
+   println!(
+    "AFTER MATCH -> buyer_id={}, buyer_rem={}, seller_id={}, seller_rem={}, active_has_buyer={}, active_has_seller={}",
+    buyer_order.id,
+    buyer_order.remaining_quantity,
+    seller_order.id,
+    seller_order.remaining_quantity,
+    self.engine.active_orders.contains_key(&buyer_order.id),
+    self.engine.active_orders.contains_key(&seller_order.id),
+);
+   ///// 
+   
 
         let (base_asset, quote_asset) = match self.market_pair {
             MarketPair::SolUsdc => ("SOL", "USD"),
@@ -582,7 +674,7 @@ pub async fn modifying_order(
     user_id: u32,
 ) -> Result<OrderAck, String> {
     let mut modified_result = None;
-    let mut assigned_seq=0;
+    let _assigned_seq=0;
 
     // 1. Critical section: Validate ownership and invoke orderbook modify method
     {
@@ -1118,3 +1210,7 @@ pub fn calculate_required_lock(order: &Order, market: &MarketPair) -> (String, f
 // }
 
 }
+
+
+//////////////////////////////////////////////////////////////
+

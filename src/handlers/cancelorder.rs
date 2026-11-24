@@ -3,10 +3,8 @@ use tokio::sync::oneshot;
 use actix_web::{web, HttpResponse, Responder, HttpRequest, HttpMessage};
 use serde::Deserialize;
 use crate::db::AppState;
-use crate::engine::worker::MarketWorker;
 use crate::engine::MarketPair;
 use crate::engine::command::MarketCommand;
-use serde::{Serialize};
 
 
 #[derive(Deserialize)]

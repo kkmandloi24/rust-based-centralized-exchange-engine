@@ -1,13 +1,11 @@
 // mod models;
 
 use crate::models::{SignupRequest,SignupResponse,ClientResponse, LoginResponse};
-use crate::models::users::{User};
 use actix_web::{web, HttpResponse, Responder};
 use crate::utils::jwt::create_jwt;
 use crate::db::AppState;
 
-use sqlx::{Row,PgPool};
-use actix_web::error::{ErrorInternalServerError,};
+use sqlx::Row;
 use bcrypt::{hash,verify};
 // or argon2 depending on your crate
 

@@ -1,15 +1,12 @@
-use crate::db::{DbStore,resolve_asset_symbol,get_or_create_user_wallet,AssetBalance };
 
 use std::fs::{File, OpenOptions};
-use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use tokio::sync::{mpsc,oneshot};
 
 //DATA MODELS
 use serde::{Serialize, Deserialize};
 use crate::engine::{MatchingEngine,MarketPair};
-use crate::models::{Side,Order};
+use crate::models::Order;
 
 
 // use crate::wal::{Wal, WallEntry}; // Adjust paths to your project
@@ -167,7 +164,7 @@ impl Wal {
         let entry = WallEntry { seq, command:command.clone(), };
 
         //serialize the incoming orderCommand into serde_son string types
-        let mut serialized = serde_json::to_string(&entry)
+        let serialized = serde_json::to_string(&entry)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             //if error then wmap_err takes in error=e then handle it
        
@@ -249,11 +246,11 @@ impl Wal {
 pub async fn recover_market_engine(
     market_pair: &MarketPair,
 ) -> io::Result<(MatchingEngine, Wal)> {
-    let snapshot_path = format!("{:?}.snapshot", market_pair).to_lowercase();
+    let _snapshot_path = format!("{:?}.snapshot", market_pair).to_lowercase();
     let wal_path = format!("{:?}.wal", market_pair).to_lowercase();
 
     let mut engine = MatchingEngine::new();
-    let mut last_seq = 0;
+    let last_seq = 0;
 
     // 1. Load per-market snapshot if it exists
     // (Assuming you have a per-market snapshot loader, or adapt to your snapshot struct)
