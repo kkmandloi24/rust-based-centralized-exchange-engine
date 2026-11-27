@@ -167,8 +167,9 @@ fn default_user_balances() -> HashMap<AssetSymbol, AssetBalance> {
     wallet
 }
 
+
+//THIS BELOW FUNCTION CHECKS FIRST USING USER ID IFUSER HS WALLET IN DB IF NOT THEN CALL A FUNCTION TO CRETE THE WALLET WITH ) BALANCES
 //If user is coming with id=1 check in the db isuser has wallet with all assets format
-//if not then create the wallet
 
 /// Helper inside worker loop
 fn get_or_create_user_wallet(
@@ -179,6 +180,11 @@ fn get_or_create_user_wallet(
     db.entry(user_id).or_insert_with(default_user_balances)
 }
 
+
+
+
+
+///WOrkers Function 
 //MAKING SINGLE THREADED Reciver (handlers points which recive request)
 /// Dedicated single-threaded worker loop processing operations sequentially
 pub async fn start_balance_worker(pool:PgPool, mut receiver: mpsc::Receiver<BalanceCommand>,
@@ -675,7 +681,6 @@ Ok(())
     };
 
     let _= resp.send(res);
-
  },
 
  BalanceCommand::ReplayDeposit{
@@ -883,6 +888,8 @@ BalanceCommand::ReplayLockFunds{user_id,
 //we used these below function for specific commed before updating the in memory balance of user
 
 
+
+
 // --- 1. Deposit ---
 async fn db_deposit(pool: &PgPool, user_id: u32, asset: &str, amount: f64) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -980,7 +987,7 @@ async fn db_modify_order_locks(
     Ok(())
 }
 
-// --- 5. Settle Trade ---
+`// --- 5. Settle Trade ---
 async fn db_settle_trade(
     pool: &PgPool,
     trade_id: i64,
@@ -1088,55 +1095,29 @@ async fn db_settle_trade(
 
     tx.commit().await?;
     Ok(())
+}`
+
+//////////////////////////////////////////UNIT TESTS////////////
+
+//WALLET CREATION WITH 0 BALANCE //
+
+#[cfg(test)]
+mod tests{
+  use super::*;
+
+  #[test]
+  fn testing_wallet(){
+
+    let user_id:u32=3;
+    let mut db:DbStore= HashMap::new();
+
+    // let db:DbStore=HashMap<u32, HashMap<AssetSymbol, AssetBalance>>;
+
+    let user_wallet= get_or_create_user_wallet(&mut db,user_id);
+    let sol_balance=user_wallet.get_mut(&AssetSymbol::SOL);
+    
+    assert!(sol_balance.unwrap().available.parse().unwrap_or(0.0)<=f64::EPSILON);
+
+
+  }
 }
-
-//////////////old
-// async fn db_settle_trade(
-//     pool: &PgPool,
-//     trade_id: i64,
-//     market: &str,
-//     buyer_id: u32,
-//     seller_id: u32,
-//     base_asset: &str,
-//     quote_asset: &str,
-//     trade_quantity: f64,
-//     execution_price: f64,
-// ) -> Result<(), sqlx::Error> {
-//     let mut tx = pool.begin().await?;
-//     let total_cost = trade_quantity * execution_price;
-
-//     // 1. Credit base asset to Buyer's available balance
-//     sqlx::query!(
-//         r#"
-//         INSERT INTO user_balances (user_id, asset, available, locked)
-//         VALUES ($1, $2, $3, 0.0)
-//         ON CONFLICT (user_id, asset) 
-//         DO UPDATE SET available = user_balances.available + EXCLUDED.available, updated_at = NOW()
-//         "#,
-//         buyer_id as i32, base_asset, trade_quantity
-//     ).execute(&mut *tx).await?;
-
-//     // 2. Credit quote asset (earnings) to Seller's available balance
-//     sqlx::query!(
-//         r#"
-//         INSERT INTO user_balances (user_id, asset, available, locked)
-//         VALUES ($1, $2, $3, 0.0)
-//         ON CONFLICT (user_id, asset) 
-//         DO UPDATE SET available = user_balances.available + EXCLUDED.available, updated_at = NOW()
-//         "#,
-//         seller_id as i32, quote_asset, total_cost
-//     ).execute(&mut *tx).await?;
-
-//     // 3. Deduct base asset from Seller's available balance
-//     sqlx::query!(
-//         r#"
-//         UPDATE user_balances 
-//         SET available = available - $1, updated_at = NOW()
-//         WHERE user_id = $2 AND asset = $3
-//         "#,
-//         trade_quantity, seller_id as i32, base_asset
-//     ).execute(&mut *tx).await?;
-
-//     tx.commit().await?;
-//     Ok(())
-// }

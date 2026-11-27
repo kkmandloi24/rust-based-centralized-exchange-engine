@@ -203,6 +203,7 @@ pub async fn sign_up(
     .fetch_optional(&app_state.db_pool)
     .await;
 
+
     match user_found {
         Ok(Some(_)) => {
             return HttpResponse::Conflict().json(SignupResponse {
@@ -212,16 +213,7 @@ pub async fn sign_up(
         }
         Ok(None) => {
             // User does not exist, proceed with signup
-        }
-        Err(err) => {
-            println!("Database error checking user: {}", err);
-            return HttpResponse::InternalServerError().json(ClientResponse {
-                message: String::from("Something went wrong"),
-            });
-        }
-    }
-
-    // 2. Hash the password
+            // 1. Hash the password
     let hashed_password = match hash(&body.password, 12) {
         Ok(hash) => hash,
         Err(err) => {
@@ -232,6 +224,7 @@ pub async fn sign_up(
         },
     };
 
+    //2. save user in the db
     // 3. Insert the new user into Supabase and retrieve their database ID
     // Assumes your database table columns are: username, email, password_hash
     // and `id` is a serial/BIGSERIAL or IDENTITY column.
@@ -270,10 +263,22 @@ pub async fn sign_up(
         message: String::from("Successfully Signup"),
         token: Some(token),
     })
+            
+        }
+        Err(err) => {
+            println!("Database error checking user: {}", err);
+            return HttpResponse::InternalServerError().json(ClientResponse {
+                message: String::from("Something went wrong"),
+            });
+        }
+    }
+
+    
 }
 
 
-/////////////////////////////////////
+/////////////////////////////////////////
+// 1. INSERT with RETURNING id -> use .fetch_one(...)
 
 // 2) LOGIN HANDLER
 // pub async fn login(
